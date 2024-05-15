@@ -18,12 +18,16 @@ public class CommandHandler
 
     private Task? _task;
 
+    // экономим выделение памяти, исключаем отрицательные значения
     private uint _connected;
     private ulong _messageCount;
+    
     private double _avgTemperature;
     private double _avgHumidity;
     private double _avgPressure;
 
+    // позволяем использовать данные переменные обоим потокам
+    // и предотвращаем оптимизации компилятора над данными переменными
     private volatile uint _exited;
     private volatile uint _stopped;
 
@@ -72,18 +76,22 @@ public class CommandHandler
                         Console.WriteLine("Начало чтения сообщений");
 
                         Dictionary<Sensor, List<double>> values = new();
-                        int skip = default;
+                        int skip;
+                        int top;
                         while (_stopped == 0 && _exited == 0)
                         {
+                            // Читаем сообщение
                             var receiveData = new byte[messageSize];
                             var result = await socket.ReceiveAsync(receiveData);
 
+                            // если сообщений нет, делаем повторный запрос на чтение
                             if (result <= 0)
                             {
                                 await Task.Delay(2000);
                                 continue;
                             }
 
+                            // иначе начинаем парсить его
                             var length = BitConverter.ToUInt16(receiveData.Take(lengthSize).ToArray(), 0);
                             var unixTime = BitConverter.ToInt64(receiveData.Skip(lengthSize).Take(timeSize).ToArray(),
                                 0);
@@ -110,6 +118,7 @@ public class CommandHandler
                                 skipped += typeSize + valueSize;
                             }
 
+                            // формируем сообщение на вывод
                             var sensorsData = values.Select(pair =>
                                     $"{SensorNames[pair.Key]} => значение = {Math.Round(pair.Value.Last(), 2)};")
                                 .ToArray();
@@ -122,11 +131,13 @@ public class CommandHandler
 
                             Console.WriteLine(message);
 
+                            // увеличиваем счетчик
                             Interlocked.Increment(ref _messageCount);
 
-                            if (_messageCount > batch)
-                                skip++;
-
+                            // обновляем среднее значения с датчиков
+                            skip = _messageCount > batch ? (int)_messageCount - batch : default;
+                            top = _messageCount < batch ? (int)_messageCount : batch;
+                            
                             Interlocked.Exchange(ref _avgTemperature, GetAvgValue(Sensor.Temperature));
                             Interlocked.Exchange(ref _avgHumidity, GetAvgValue(Sensor.Humidity));
                             Interlocked.Exchange(ref _avgPressure, GetAvgValue(Sensor.Pressure));
@@ -138,7 +149,7 @@ public class CommandHandler
                                     .Value
                                     .Skip(skip)
                                     .Take(batch)
-                                    .Sum() / batch;
+                                    .Sum() / top;
                             }
                         }
 
